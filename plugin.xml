@@ -1,0 +1,9 @@
+<?xml version="1.0"?>
+<plugin>
+    <name>Export SCML</name>
+    <exporter>
+        <extension>scml</extension>
+        <description>Spriter format (*.scml)</description>
+        <exec>scml_exporter.py</exec>
+    </exporter>
+</plugin>
