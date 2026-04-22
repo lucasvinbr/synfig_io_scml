@@ -305,10 +305,12 @@ def process(passed_args):
                     anim_element = layer_param.find("animated")
                     if anim_element is not None:
                         for wp in anim_element.iter("waypoint"):
-                            wp_data = {}
-                            wp_data["time"] = float(wp.get("time").replace("s", ""))
-                            wp_data["layer"] = wp.find("string").text
-                            transf_data_arr.append(wp_data)
+                            if wp.get("time") != "SOT":
+                                wp_data = {}
+                                wp_data["time"] = float(wp.get("time").replace("s", ""))
+                                wp_data["layer"] = wp.find("string").text
+                                transf_data_arr.append(wp_data)
+
                     else:
                         # single keyframe describing layer used during whole anim
                         wp_data = {}
