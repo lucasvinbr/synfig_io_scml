@@ -25,6 +25,7 @@ from operator import itemgetter
 import xml.etree.ElementTree as ET
 import image
 
+supported_anim_types = ["offset", "scale", "angle", "spriteswitch"]
 
 def register_used_sprite_file(folders_list, sprite_data):
     "registers the sprite in the folders/files list. Creates the folder entry if needed"
@@ -85,7 +86,7 @@ def calc_layer_edits_based_on_rect(inner_layer_data, px_ratio):
 def figure_out_anim_length(anim_data):
     "uses the time of the last frame, or a fallback length"
     anim_length = 100 #fallback length; min anim length
-    for anim_type in ["offset", "scale", "spriteswitch"]:
+    for anim_type in supported_anim_types:
         if anim_type in anim_data:
             for wp in anim_data[anim_type]:
                 converted_time = int(wp["time"] * 1000)
@@ -98,7 +99,7 @@ From the ingested synfig anim data, return a single keyframe array, in a format 
 """
     logging.log(logging.DEBUG, "flatten anim: %s", anim_data["name"])
     flattened_keyframes = []
-    for anim_type in ["offset", "scale", "spriteswitch"]:
+    for anim_type in supported_anim_types:
         if anim_type in anim_data:
             for wp in anim_data[anim_type]:
                 # for each synfig keyframe, we see if there isn't a flattened one for that time already.
@@ -133,7 +134,7 @@ From the ingested synfig anim data, return a single keyframe array, in a format 
         i = flat_kf[0]
         wp = flat_kf[1]
         wp_time = wp["time"]
-        for anim_type in ["offset", "scale", "spriteswitch"]:
+        for anim_type in supported_anim_types:
             if anim_type not in wp:
                 previous_wp = flattened_keyframes[i - 1]
                 if anim_type == "spriteswitch":
@@ -155,6 +156,9 @@ From the ingested synfig anim data, return a single keyframe array, in a format 
                             for attr in ["x", "y"]:
                                 interp_ratio = (next_valid_wp[anim_type][attr] - previous_wp[anim_type][attr]) / (time_delta)
                                 wp[anim_type][attr] = previous_wp[anim_type][attr] + (interp_ratio * (wp_time - previous_wp["time"]))
+                        elif anim_type == "angle":
+                            interp_ratio = (next_valid_wp[anim_type]["value"] - previous_wp[anim_type]["value"]) / (time_delta)
+                            wp[anim_type]["value"] = previous_wp[anim_type]["value"] + (interp_ratio * (wp_time - previous_wp["time"]))
                     else:
                         wp[anim_type] = previous_wp[anim_type]
 
@@ -255,10 +259,10 @@ def process(passed_args):
                 if layer_param_type == "transformation":
                     #description of movements, scale changes etc
                     layer_composite = layer_param.find("composite")
-                    for transformation in layer_composite.iter(): #for each transformation type...
+                    for transformation in layer_composite: #for each transformation type...
                         transf_type = transformation.tag
                         logging.log(logging.DEBUG, "transf_type: %s", transf_type)
-                        if transf_type == "offset":
+                        if transf_type in ("offset", "scale"):
                             transf_data_arr = []
                             anim_element = transformation.find("animated")
                             if anim_element is not None:
@@ -270,34 +274,33 @@ def process(passed_args):
                                     wp_data["y"] = float(wp_vec.find("y").text)
                                     transf_data_arr.append(wp_data)
                             else:
-                                # single keyframe describing position during whole anim
+                                # single keyframe during whole anim
                                 wp_data = {}
                                 wp_data["time"] = 0.0
                                 wp_vec = transformation.find("vector")
                                 wp_data["x"] = float(wp_vec.find("x").text)
                                 wp_data["y"] = float(wp_vec.find("y").text)
                                 transf_data_arr.append(wp_data)
-                            anim_data["offset"] = transf_data_arr
-                        if transf_type == "scale":
+                            anim_data[transf_type] = transf_data_arr
+                        elif transf_type == "angle":
                             transf_data_arr = []
                             anim_element = transformation.find("animated")
                             if anim_element is not None:
                                 for wp in anim_element.iter("waypoint"):
                                     wp_data = {}
                                     wp_data["time"] = float(wp.get("time").replace("s", ""))
-                                    wp_vec = wp.find("vector")
-                                    wp_data["x"] = float(wp_vec.find("x").text)
-                                    wp_data["y"] = float(wp_vec.find("y").text)
+                                    wp_angle = wp.find("angle")
+                                    wp_data["value"] = float(wp_angle.get("value"))
                                     transf_data_arr.append(wp_data)
                             else:
-                                # single keyframe describing scale during whole anim
+                                # single keyframe during whole anim
                                 wp_data = {}
                                 wp_data["time"] = 0.0
-                                wp_vec = transformation.find("vector")
-                                wp_data["x"] = float(wp_vec.find("x").text)
-                                wp_data["y"] = float(wp_vec.find("y").text)
+                                wp_angle = transformation.find("angle")
+                                wp_data["value"] = float(wp_angle.get("value"))
                                 transf_data_arr.append(wp_data)
-                            anim_data["scale"] = transf_data_arr
+                            anim_data[transf_type] = transf_data_arr
+
 
                 if layer_param_type == "layer_name":
                     #description of image shown by this switch layer, and its changes, if animated
@@ -385,7 +388,7 @@ def process(passed_args):
                                     frame_anim_layer = anim_layer
                                     break
                     layer_offsets = frame_anim_layer["offsets"]
-                    timeline_obj_xml = ET.Element("object", {"folder":folder_id, "file":file_id, "x":str(px_ratio * (kf["offset"]["x"] + layer_offsets["offset"]["x"])), "y":str(px_ratio * (kf["offset"]["y"] + layer_offsets["offset"]["y"])), "scale_x":str(kf["scale"]["x"] * layer_offsets["scale"]["x"]), "scale_y":str(kf["scale"]["y"] * layer_offsets["scale"]["y"]), "angle":"0", "pivot_x":"0.5", "pivot_y":"0.5"})
+                    timeline_obj_xml = ET.Element("object", {"folder":folder_id, "file":file_id, "x":str(px_ratio * (kf["offset"]["x"] + layer_offsets["offset"]["x"])), "y":str(px_ratio * (kf["offset"]["y"] + layer_offsets["offset"]["y"])), "scale_x":str(kf["scale"]["x"] * layer_offsets["scale"]["x"]), "scale_y":str(kf["scale"]["y"] * layer_offsets["scale"]["y"]), "angle":str(kf["angle"]["value"]), "pivot_x":"0.5", "pivot_y":"0.5"})
                     timeline_key_xml.append(timeline_obj_xml)
                     timeline_xml.append(timeline_key_xml)
                 ent_xml.append(anim_xml)
