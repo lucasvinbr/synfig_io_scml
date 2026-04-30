@@ -25,7 +25,7 @@ from operator import itemgetter
 import xml.etree.ElementTree as ET
 import image
 
-supported_anim_types = ["offset", "scale", "angle", "spriteswitch"]
+supported_anim_types = ["offset", "scale", "angle", "spriteswitch", "pivot"]
 
 def register_used_sprite_file(folders_list, sprite_data):
     "registers the sprite in the folders/files list. Creates the folder entry if needed"
@@ -70,6 +70,8 @@ def calc_layer_edits_based_on_rect(inner_layer_data, px_ratio):
     scale = {}
     changed_width = abs(px_ratio * br["x"] - px_ratio * tl["x"])
     changed_height = abs(px_ratio * tl["y"] - px_ratio * br["y"])
+    inner_layer_data["changed_width"] = changed_width
+    inner_layer_data["changed_height"] = changed_height
     # compare to image width to figure out scale
     scale["x"] = changed_width / float(sprite_data["width"])
     scale["y"] = changed_height / float(sprite_data["height"])
@@ -77,7 +79,7 @@ def calc_layer_edits_based_on_rect(inner_layer_data, px_ratio):
     # if the image rect is centralized, even if scaled via tl and br, their x or y sum should be zero. if not, we've got an offset!
     offset = {}
     offset["x"] = (br["x"] + tl["x"]) / 2
-    offset["y"] = (br["y"] + tl["y"]) / 2 # in spriter, positive y is up, the opposite of synfig
+    offset["y"] = (br["y"] + tl["y"]) / 2 # in spriter, positive y is down, the opposite of synfig
     offsets["offset"] = offset
 
     inner_layer_data["offsets"] = offsets
@@ -140,6 +142,10 @@ From the ingested synfig anim data, return a single keyframe array, in a format 
                 if anim_type == "spriteswitch":
                     # use sprite from previous wp
                     wp[anim_type] = previous_wp[anim_type]
+                elif anim_type == "pivot":
+                    # use pivot from previous wp
+                    logging.log(logging.DEBUG, "flatten anim - previous pivot x: %s", str(previous_wp[anim_type]["x"]))
+                    wp[anim_type] = previous_wp[anim_type]
                 else:
                     # interpolate! find next valid wp... if we can't find one, use previous valid data without interpolating
                     logging.log(logging.DEBUG, "flatten anim - interpolate %s", anim_type)
@@ -165,7 +171,32 @@ From the ingested synfig anim data, return a single keyframe array, in a format 
     return flattened_keyframes
 
 
+def parse_animated_vector_data(vector_xml_elem):
+    "returns an array containing waypoints for the provided container xml element"
+    transf_data_arr = []
+    anim_element = vector_xml_elem.find("animated")
+    if anim_element is not None:
+        for wp in anim_element.iter("waypoint"):
+            wp_data = {}
+            wp_data["time"] = float(wp.get("time").replace("s", ""))
+            wp_vec = wp.find("vector")
+            wp_data["x"] = float(wp_vec.find("x").text)
+            wp_data["y"] = float(wp_vec.find("y").text)
+            transf_data_arr.append(wp_data)
+    else:
+        # single keyframe during whole anim
+        wp_data = {}
+        wp_data["time"] = 0.0
+        wp_vec = vector_xml_elem.find("vector")
+        wp_data["x"] = float(wp_vec.find("x").text)
+        wp_data["y"] = float(wp_vec.find("y").text)
+        transf_data_arr.append(wp_data)
+
+    return transf_data_arr
+
+
 def process(passed_args):
+    "the main data ingestion and exporting process!"
 
     file_to_export = passed_args.infile
     file_dest = passed_args.outfile
@@ -256,32 +287,14 @@ def process(passed_args):
                             inner_layer_data["sprite_data"] = layersprite_data
                             calc_layer_edits_based_on_rect(inner_layer_data, px_ratio)
 
-                if layer_param_type == "transformation":
+                elif layer_param_type == "transformation":
                     #description of movements, scale changes etc
                     layer_composite = layer_param.find("composite")
                     for transformation in layer_composite: #for each transformation type...
                         transf_type = transformation.tag
                         logging.log(logging.DEBUG, "transf_type: %s", transf_type)
                         if transf_type in ("offset", "scale"):
-                            transf_data_arr = []
-                            anim_element = transformation.find("animated")
-                            if anim_element is not None:
-                                for wp in anim_element.iter("waypoint"):
-                                    wp_data = {}
-                                    wp_data["time"] = float(wp.get("time").replace("s", ""))
-                                    wp_vec = wp.find("vector")
-                                    wp_data["x"] = float(wp_vec.find("x").text)
-                                    wp_data["y"] = float(wp_vec.find("y").text)
-                                    transf_data_arr.append(wp_data)
-                            else:
-                                # single keyframe during whole anim
-                                wp_data = {}
-                                wp_data["time"] = 0.0
-                                wp_vec = transformation.find("vector")
-                                wp_data["x"] = float(wp_vec.find("x").text)
-                                wp_data["y"] = float(wp_vec.find("y").text)
-                                transf_data_arr.append(wp_data)
-                            anim_data[transf_type] = transf_data_arr
+                            anim_data[transf_type] = parse_animated_vector_data(transformation)
                         elif transf_type == "angle":
                             transf_data_arr = []
                             anim_element = transformation.find("animated")
@@ -301,8 +314,10 @@ def process(passed_args):
                                 transf_data_arr.append(wp_data)
                             anim_data[transf_type] = transf_data_arr
 
+                elif layer_param_type == "origin":
+                    anim_data["pivot"] = parse_animated_vector_data(layer_param)
 
-                if layer_param_type == "layer_name":
+                elif layer_param_type == "layer_name":
                     #description of image shown by this switch layer, and its changes, if animated
                     transf_data_arr = []
                     anim_element = layer_param.find("animated")
@@ -387,8 +402,15 @@ def process(passed_args):
                                     file_id = layer_sprite_data["id"]
                                     frame_anim_layer = anim_layer
                                     break
+
                     layer_offsets = frame_anim_layer["offsets"]
-                    timeline_obj_xml = ET.Element("object", {"folder":folder_id, "file":file_id, "x":str(px_ratio * (kf["offset"]["x"] + layer_offsets["offset"]["x"])), "y":str(px_ratio * (kf["offset"]["y"] + layer_offsets["offset"]["y"])), "scale_x":str(kf["scale"]["x"] * layer_offsets["scale"]["x"]), "scale_y":str(kf["scale"]["y"] * layer_offsets["scale"]["y"]), "angle":str(kf["angle"]["value"]), "pivot_x":"0.5", "pivot_y":"0.5"})
+                    # convert pivot info to a value relative to the sprite's size and offsets
+                    logging.log(logging.DEBUG, "kf pivot x before conv: %s", str(kf["pivot"]["x"]))
+                    conv_pivot = kf["pivot"].copy()
+                    conv_pivot["x"] = 0.5 + ((px_ratio * (conv_pivot["x"])) / float(frame_anim_layer["changed_width"]))
+                    conv_pivot["y"] = 0.5 + ((px_ratio * (conv_pivot["y"])) / float(frame_anim_layer["changed_height"]))
+
+                    timeline_obj_xml = ET.Element("object", {"folder":folder_id, "file":file_id, "x":str(px_ratio * (kf["offset"]["x"] + layer_offsets["offset"]["x"])), "y":str(px_ratio * (kf["offset"]["y"] + layer_offsets["offset"]["y"])), "scale_x":str(kf["scale"]["x"] * layer_offsets["scale"]["x"]), "scale_y":str(kf["scale"]["y"] * layer_offsets["scale"]["y"]), "angle":str(kf["angle"]["value"]), "pivot_x":str(conv_pivot["x"]), "pivot_y":str(conv_pivot["y"])})
                     timeline_key_xml.append(timeline_obj_xml)
                     timeline_xml.append(timeline_key_xml)
                 ent_xml.append(anim_xml)
