@@ -27,10 +27,11 @@ import image
 
 supported_anim_types = ["offset", "scale", "angle", "spriteswitch", "pivot"]
 
-def register_used_sprite_file(folders_list, sprite_data):
+def register_used_sprite_file(context, sprite_data):
     "registers the sprite in the folders/files list. Creates the folder entry if needed"
     new_folder = True
     target_folder = {}
+    folders_list = context["scml_folders"]
     folder_name = sprite_data.get("folder", "")
     for folder in folders_list:
         if folder["name"] == folder_name:
@@ -58,11 +59,17 @@ def register_used_sprite_file(folders_list, sprite_data):
         target_folder["files"].append(sprite_data)
 
 
-def calc_layer_edits_based_on_rect(inner_layer_data, px_ratio):
+def calc_layer_edits_based_on_rect(inner_layer_data, context):
     """based on the sprite data's dimensions and tl and br entries, we can calculate the additions that should be applied to the sprite's offset and scale in spriter.
     """
     offsets = {}
+    px_ratio = context["px_ratio"]
     sprite_data = inner_layer_data["sprite_data"]
+
+    if "tl" not in inner_layer_data:
+        # this is not a sprite layer, abort
+        return
+
     tl = inner_layer_data["tl"]
     br = inner_layer_data["br"]
 
@@ -195,153 +202,133 @@ def parse_animated_vector_data(vector_xml_elem):
     return transf_data_arr
 
 
-def process(passed_args):
-    "the main data ingestion and exporting process!"
+def process_layer_canvas(parent_layer_data, this_layer, anim_data, context):
+    "ingest data from layers recursively"
 
-    file_to_export = passed_args.infile
-    file_dest = passed_args.outfile
+    inner_layers = anim_data["inner_layers"]
+    this_layer_data = {}
+    this_layer_data["id"] = str(context["next_layer_id"])
+    context["next_layer_id"] += 1
 
-    sif_file_dir = os.path.dirname(file_to_export)
+    # get layer name and its parent layer id
+    if parent_layer_data is not None:
+        this_layer_data["parent_layer_id"] = parent_layer_data["id"]
+        this_layer_data["name"] = this_layer.get("desc", this_layer.get("type"))
+    else:
+        this_layer_data["parent_layer_id"] = "none"
+        this_layer_data["name"] = "root_layer"
 
-    # Read the input file
-    tree = ET.parse(file_to_export)
-    canvas = tree.getroot()  # canvas
+    logging.log(logging.DEBUG, "parsing layer: %s", this_layer_data["name"])
+
+    layersprite_data = {}
+    this_layer_data["sprite_data"] = layersprite_data
+
+    # get image, translation changes etc
+    for layer_child in this_layer:
+        if layer_child.tag == "param":
+            layer_param_type = layer_child.get("name")
+            if layer_param_type == "canvas":
+                #description of inner layers of this anim/layer
+                layer_canvas = layer_child.find("canvas")
+                for canvas_child in layer_canvas: #for each inner layer...
+                    if canvas_child.tag == "layer":
+                        process_layer_canvas(this_layer_data, canvas_child, anim_data, context)
+
+            elif layer_param_type == "filename":
+                clp_filepath_str = layer_child.find("string").text
+                this_layer_data["filepath"] = clp_filepath_str
+                logging.log(logging.DEBUG, "layersprite_data name: %s", clp_filepath_str)
+                inner_layer_filepath = os.path.join(context["sif_file_dir"], clp_filepath_str)
+                inner_layer_filepath = os.path.abspath(inner_layer_filepath)
+                inner_layer_file_w, inner_layer_file_h = image.get_image_size(inner_layer_filepath)
+                layersprite_data["name"] = clp_filepath_str
+                layersprite_data["layername"] = this_layer_data["name"]
+                layersprite_data["width"] = str(inner_layer_file_w)
+                layersprite_data["height"] = str(inner_layer_file_h)
+                head = os.path.dirname(clp_filepath_str)
+                layersprite_data["folder"] = str(head)
+
+            elif layer_param_type in ('tl', 'br'):
+                # set up adjusted sprite rect (top left, bottom right).
+                # we can use this info to add custom scale keyframes on the spriter side
+                sprite_rect_pt = {}
+                param_vec = layer_child.find("vector")
+                sprite_rect_pt["x"] = float(param_vec.find("x").text)
+                sprite_rect_pt["y"] = float(param_vec.find("y").text)
+                this_layer_data[layer_param_type] = sprite_rect_pt
+
+            elif layer_param_type == "transformation":
+                #description of movements, scale changes etc
+                layer_composite = layer_child.find("composite")
+                for transformation in layer_composite: #for each transformation type...
+                    transf_type = transformation.tag
+                    logging.log(logging.DEBUG, "transf_type: %s", transf_type)
+                    if transf_type in ("offset", "scale"):
+                        anim_data[transf_type] = parse_animated_vector_data(transformation)
+                    elif transf_type == "angle":
+                        transf_data_arr = []
+                        anim_element = transformation.find("animated")
+                        if anim_element is not None:
+                            for wp in anim_element.iter("waypoint"):
+                                wp_data = {}
+                                wp_data["time"] = float(wp.get("time").replace("s", ""))
+                                wp_angle = wp.find("angle")
+                                wp_data["value"] = float(wp_angle.get("value"))
+                                transf_data_arr.append(wp_data)
+                        else:
+                            # single keyframe during whole anim
+                            wp_data = {}
+                            wp_data["time"] = 0.0
+                            wp_angle = transformation.find("angle")
+                            wp_data["value"] = float(wp_angle.get("value"))
+                            transf_data_arr.append(wp_data)
+                        anim_data[transf_type] = transf_data_arr
+
+            elif layer_param_type == "origin":
+                anim_data["pivot"] = parse_animated_vector_data(layer_child)
+
+            elif layer_param_type == "layer_name":
+                #description of image shown by this switch layer, and its changes, if animated
+                transf_data_arr = []
+                anim_element = layer_child.find("animated")
+                if anim_element is not None:
+                    for wp in anim_element.iter("waypoint"):
+                        if wp.get("time") != "SOT":
+                            wp_data = {}
+                            wp_data["time"] = float(wp.get("time").replace("s", ""))
+                            wp_data["layer"] = wp.find("string").text
+                            transf_data_arr.append(wp_data)
+
+                else:
+                    # single keyframe describing layer used during whole anim
+                    wp_data = {}
+                    wp_data["time"] = 0.0
+                    wp_data["layer"] = layer_child.find("string").text
+                    transf_data_arr.append(wp_data)
+                anim_data["spriteswitch"] = transf_data_arr
+
+    # finalize inner layer: link data, make necessary calculations
+    inner_layers.append(this_layer_data)
+    if "name" in layersprite_data:
+        register_used_sprite_file(context, layersprite_data)
+        calc_layer_edits_based_on_rect(this_layer_data, context)
+
+    logging.log(logging.DEBUG, "-done parsing layer: %s", this_layer_data["name"])
+
+
+def write_data_to_xml(context):
+    "writes the ingested data to the output file"
 
     out_root = ET.fromstring("""<?xml version="1.0" encoding="UTF-8"?>
 <spriter_data scml_version="1.0" generator="BrashMonkey Spriter" generator_version="r11">
 </spriter_data>
     """)
-
     logging.log(logging.DEBUG, out_root.tag)
 
-    #fps = canvas.get("fps", 24)
-    canvas_x = float(canvas.get("width", 500))
-    #canvas_y = float(canvas.get("height", 500))
-    canvas_viewbox = canvas.get("view-box", "-4.000000 2.250000 4.000000 -2.250000")
-    # we can figure out the px-to-synfig units ratio using the obtained canvas dimensions
-    viewbox = canvas_viewbox.split(" ")
-    viewbox_width = abs(float(viewbox[0]) - float(viewbox[2]))
+    scml_folders = context["scml_folders"]
+    scml_entities = context["scml_entities"]
+    px_ratio = context["px_ratio"]
 
-    px_ratio = canvas_x / viewbox_width
-
-    scml_folders = [] # we fill the folders as we find images in the sif file
-    scml_entities = []
-
-    scml_entity = {
-        "name": "entity_000"
-        }
-
-    scml_entity["anims"] = []
-
-    scml_entities.append(scml_entity)
-
-
-    for layer in canvas.iter("layer"):
-        # we're assuming each switch layer in the sif file takes care of one spriter anim
-        if layer.get("type") == "switch":
-            anim_name = layer.get("desc")
-            logging.log(logging.DEBUG, "anim_name: %s", anim_name)
-            anim_data = {"name":anim_name}
-            inner_layers = []
-            anim_data["inner_layers"] = inner_layers
-            # get image, translation changes etc
-            for layer_param in layer.iter("param"):
-                layer_param_type = layer_param.get("name")
-                if layer_param_type == "canvas":
-                    #description of inner layers of this anim/layer
-                    layer_canvas = layer_param.find("canvas")
-                    for canvas_layer in layer_canvas.iter("layer"): #for each inner layer...
-                        cl_desc = canvas_layer.get("desc") #get layer name
-                        logging.log(logging.DEBUG, "innercanvas_layer: %s", cl_desc)
-                        inner_layer_data = {}
-                        layersprite_data = {}
-                        for canvas_layer_param in canvas_layer.iter("param"): #for each data entry of the inner layer...
-                            clp_name = canvas_layer_param.get("name")
-                            #logging.log(logging.DEBUG, "canvas_layer_param: " + clp_name)
-                            if clp_name == "filename":
-                                clp_filepath_str = canvas_layer_param.find("string").text
-                                inner_layer_data["filepath"] = clp_filepath_str
-                                logging.log(logging.DEBUG, "layersprite_data name: %s", clp_filepath_str)
-                                inner_layer_filepath = os.path.join(sif_file_dir, clp_filepath_str)
-                                inner_layer_filepath = os.path.abspath(inner_layer_filepath)
-                                inner_layer_file_w, inner_layer_file_h = image.get_image_size(inner_layer_filepath)
-                                layersprite_data["name"] = clp_filepath_str
-                                layersprite_data["layername"] = cl_desc
-                                layersprite_data["width"] = str(inner_layer_file_w)
-                                layersprite_data["height"] = str(inner_layer_file_h)
-                                head = os.path.dirname(clp_filepath_str)
-                                layersprite_data["folder"] = str(head)
-                            if clp_name in ('tl', 'br'):
-                                # set up adjusted sprite rect (top left, bottom right).
-                                # we can use this info to add custom scale keyframes on the spriter side
-                                sprite_rect_pt = {}
-                                param_vec = canvas_layer_param.find("vector")
-                                sprite_rect_pt["x"] = float(param_vec.find("x").text)
-                                sprite_rect_pt["y"] = float(param_vec.find("y").text)
-                                inner_layer_data[clp_name] = sprite_rect_pt
-                        # finalize inner layer: link data, make necessary calculations
-                        if layersprite_data["name"]:
-                            inner_layers.append(inner_layer_data)
-                            inner_layer_data["name"] = cl_desc
-                            register_used_sprite_file(scml_folders, layersprite_data)
-                            inner_layer_data["sprite_data"] = layersprite_data
-                            calc_layer_edits_based_on_rect(inner_layer_data, px_ratio)
-
-                elif layer_param_type == "transformation":
-                    #description of movements, scale changes etc
-                    layer_composite = layer_param.find("composite")
-                    for transformation in layer_composite: #for each transformation type...
-                        transf_type = transformation.tag
-                        logging.log(logging.DEBUG, "transf_type: %s", transf_type)
-                        if transf_type in ("offset", "scale"):
-                            anim_data[transf_type] = parse_animated_vector_data(transformation)
-                        elif transf_type == "angle":
-                            transf_data_arr = []
-                            anim_element = transformation.find("animated")
-                            if anim_element is not None:
-                                for wp in anim_element.iter("waypoint"):
-                                    wp_data = {}
-                                    wp_data["time"] = float(wp.get("time").replace("s", ""))
-                                    wp_angle = wp.find("angle")
-                                    wp_data["value"] = float(wp_angle.get("value"))
-                                    transf_data_arr.append(wp_data)
-                            else:
-                                # single keyframe during whole anim
-                                wp_data = {}
-                                wp_data["time"] = 0.0
-                                wp_angle = transformation.find("angle")
-                                wp_data["value"] = float(wp_angle.get("value"))
-                                transf_data_arr.append(wp_data)
-                            anim_data[transf_type] = transf_data_arr
-
-                elif layer_param_type == "origin":
-                    anim_data["pivot"] = parse_animated_vector_data(layer_param)
-
-                elif layer_param_type == "layer_name":
-                    #description of image shown by this switch layer, and its changes, if animated
-                    transf_data_arr = []
-                    anim_element = layer_param.find("animated")
-                    if anim_element is not None:
-                        for wp in anim_element.iter("waypoint"):
-                            if wp.get("time") != "SOT":
-                                wp_data = {}
-                                wp_data["time"] = float(wp.get("time").replace("s", ""))
-                                wp_data["layer"] = wp.find("string").text
-                                transf_data_arr.append(wp_data)
-
-                    else:
-                        # single keyframe describing layer used during whole anim
-                        wp_data = {}
-                        wp_data["time"] = 0.0
-                        wp_data["layer"] = layer_param.find("string").text
-                        transf_data_arr.append(wp_data)
-                    anim_data["spriteswitch"] = transf_data_arr
-            scml_entity["anims"].append(anim_data)
-
-    # done gathering data!
-    # it's time to write it down in the out file
-    # write folders and imgs...
-    logging.log(logging.DEBUG, "done gathering data!")
     for scmlfolder in scml_folders:
         folder_xml = ET.Element("folder", {"id":scmlfolder["id"],"name":scmlfolder["name"]})
         out_root.append(folder_xml)
@@ -387,11 +374,14 @@ def process(passed_args):
                     timeline_key_xml = ET.Element("key", {"id":str(len(timeline_xml)), "time":str(kf["time"]), "spin":"0"})
                     # figure out sprite's folder and file id
                     folder_id = "0"
-                    file_id = "0"
+                    file_id = "-1"
                     anim_layers = anim["inner_layers"]
                     frame_anim_layer = {}
                     for anim_layer in anim_layers:
                         layer_sprite_data = anim_layer["sprite_data"]
+                        if "layername" not in layer_sprite_data:
+                            # not a sprite layer, go to next layer
+                            continue
                         logging.log(logging.DEBUG, "layersprite_data name: " + layer_sprite_data["layername"] + " kf layer: " + kf_layer)
                         if layer_sprite_data["layername"] == kf_layer:
                             for scmlfolder in scml_folders:
@@ -418,14 +408,75 @@ def process(passed_args):
             out_root.append(ent_xml)
             ent_index += 1
 
-
-
     logging.log(logging.DEBUG, "xml set up, writing now!")
+
+    file_dest = context["file_dest"]
     with open(file_dest, "w", encoding="utf-8") as fil:
         xml_header = """<?xml version="1.0" encoding="UTF-8"?>
 {content}
 """
         fil.write(xml_header.format(content=ET.tostring(out_root, "unicode")))
+
+def process(passed_args):
+    "the main data ingestion and exporting process!"
+
+    file_to_export = passed_args.infile
+    file_dest = passed_args.outfile
+
+    sif_file_dir = os.path.dirname(file_to_export)
+
+    # Read the input file
+    tree = ET.parse(file_to_export)
+    canvas = tree.getroot()  # canvas
+
+    context = {} # any vars we need to pass around
+    context["sif_file_dir"] = sif_file_dir
+    context["file_dest"] = file_dest
+    context["next_layer_id"] = 0
+    scml_entities = []
+    scml_folders = [] # we fill the folders as we find images in the sif file
+    context["scml_entities"] = scml_entities
+    context["scml_folders"] = scml_folders
+
+
+    #fps = canvas.get("fps", 24)
+    canvas_x = float(canvas.get("width", 500))
+    #canvas_y = float(canvas.get("height", 500))
+    canvas_viewbox = canvas.get("view-box", "-4.000000 2.250000 4.000000 -2.250000")
+    # we can figure out the px-to-synfig units ratio using the obtained canvas dimensions
+    viewbox = canvas_viewbox.split(" ")
+    viewbox_width = abs(float(viewbox[0]) - float(viewbox[2]))
+
+    context["px_ratio"] = canvas_x / viewbox_width
+
+    scml_entity = {
+        "name": "entity_000"
+        }
+
+    scml_entity["anims"] = []
+
+    scml_entities.append(scml_entity)
+
+    for child in canvas:
+        # we're assuming each root layer in the sif file takes care of one spriter anim
+        if child.tag == "layer":
+            anim_name = child.get("desc")
+            logging.log(logging.DEBUG, "anim_name: %s", anim_name)
+            anim_data = {"name":anim_name}
+            inner_layers = []
+            anim_data["inner_layers"] = inner_layers
+
+            process_layer_canvas(None, child, anim_data, context)
+
+            scml_entity["anims"].append(anim_data)
+
+    # done gathering data!
+    # it's time to write it down in the out file
+    # write folders and imgs...
+    logging.log(logging.DEBUG, "done gathering data!")
+
+    write_data_to_xml(context)
+
     logging.log(logging.DEBUG, "DONE!")
 
 
