@@ -1,4 +1,10 @@
 # synfig_io_scml
 Synfig plugin for exporting spriter .scml files.
 
-Currently, only sprite switch layers are supported, with each layer representing one spriter animation.
+Each root layer in the synfig scene should represent one spriter animation. 
+
+Supports: 
+- sprite layers
+- sprite switch layers
+- Nested layer transforming
+
