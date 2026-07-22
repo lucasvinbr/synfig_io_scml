@@ -439,24 +439,41 @@ def apply_parent_transforms_to_wp_recursive(wp, this_layer_data, parent_layer_da
     for anim_type in supported_anim_types:
         if anim_type == "scale":
             for attr in ["x", "y"]:
-                logging.log(logging.DEBUG, "x scale before apply: %s", str(wp_layer_data[anim_type][attr]))
+                # logging.log(logging.DEBUG, "x scale before apply: %s", str(wp_layer_data[anim_type][attr]))
                 wp_layer_data[anim_type][attr] *= wp_parent_layer_data[anim_type][attr]
-                logging.log(logging.DEBUG, "x scale after apply: %s", str(wp_layer_data[anim_type][attr]))
+                # logging.log(logging.DEBUG, "x scale after apply: %s", str(wp_layer_data[anim_type][attr]))
         elif anim_type == "angle":
             wp_layer_data[anim_type]["value"] += wp_parent_layer_data[anim_type]["value"]
         elif anim_type == "offset":
             # ok, this is where it gets a bit more complicated:
             # offset from parent is influenced by parent's offset, rotation and scale...
-            # but the rotation is also influenced by the parent's pivot, as the children are rotated around that point
+            # but the rotation and scaling are also influenced by the parent's pivot, as the children are rotated around that point
+            logging.log(logging.DEBUG, "y offset before apply: %s", str(wp_layer_data[anim_type]["y"]))
+
             parent_pivot = wp_parent_layer_data["pivot"]
             parent_angle = wp_parent_layer_data["angle"]["value"]
-            dist_from_parent = math.hypot(wp_layer_data[anim_type]["x"], wp_layer_data[anim_type]["y"])
-            # find the angle defined by the child's offset, so that we can add the parent's angle and then calculate the new offset
-            offset_angle = math.degrees(math.atan2(wp_layer_data[anim_type]["y"] - parent_pivot["y"], wp_layer_data[anim_type]["x"] - parent_pivot["x"])) + parent_angle
+            parent_angle_rads = math.radians(parent_angle)
 
-            wp_layer_data[anim_type]["x"] = wp_parent_layer_data[anim_type]["x"] + (dist_from_parent * wp_parent_layer_data["scale"]["x"] * math.cos(math.radians(offset_angle)))
+            wp_layer_data[anim_type]["x"] -= parent_pivot["x"]
+            wp_layer_data[anim_type]["y"] -= parent_pivot["y"]
 
-            wp_layer_data[anim_type]["y"] = wp_parent_layer_data[anim_type]["y"] + (dist_from_parent * wp_parent_layer_data["scale"]["y"] * math.sin(math.radians(offset_angle)))
+            wp_layer_data[anim_type]["x"] *= wp_parent_layer_data["scale"]["x"]
+            wp_layer_data[anim_type]["y"] *= wp_parent_layer_data["scale"]["y"]
+
+            # logging.log(logging.DEBUG, "y offset after scale: %s", str(wp_layer_data[anim_type]["y"]))
+
+            orig_x = wp_layer_data[anim_type]["x"]
+            orig_y = wp_layer_data[anim_type]["y"]
+
+            wp_layer_data[anim_type]["x"] = orig_x * math.cos(parent_angle_rads) - orig_y * math.sin(parent_angle_rads)
+            wp_layer_data[anim_type]["y"] = orig_x * math.sin(parent_angle_rads) + orig_y * math.cos(parent_angle_rads)
+
+            # logging.log(logging.DEBUG, "y offset after rotate: %s", str(wp_layer_data[anim_type]["y"]))
+
+            wp_layer_data[anim_type]["x"] += wp_parent_layer_data[anim_type]["x"]
+            wp_layer_data[anim_type]["y"] += wp_parent_layer_data[anim_type]["y"]
+
+            # logging.log(logging.DEBUG, "y offset after translate: %s", str(wp_layer_data[anim_type]["y"]))
 
     # now, apply transforms to this layer's children!
     for child_layer_id in get_child_layers_ids(this_layer_data["id"], anim_data):
