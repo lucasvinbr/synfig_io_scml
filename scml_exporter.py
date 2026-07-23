@@ -171,7 +171,6 @@ def get_empty_anim_layer_transformation_data():
 def process_layer_canvas(parent_layer_data, this_layer, anim_data, context):
     "ingest data from layers recursively"
 
-    inner_layers = anim_data["inner_layers"]
     this_layer_data = {}
     this_layer_data["id"] = str(context["next_layer_id"])
     this_layer_data["is_spriter_object"] = False # by default, we don't create objects for any layers except sprite import
@@ -280,7 +279,7 @@ def process_layer_canvas(parent_layer_data, this_layer, anim_data, context):
                 layer_kf_data["spriteswitch"] = transf_data_arr
 
     # finalize inner layer: link data, make necessary calculations
-    inner_layers.append(this_layer_data)
+    anim_data["inner_layers"].append(this_layer_data)
     if "name" in layersprite_data:
         register_used_sprite_file(context, layersprite_data)
         calc_layer_edits_based_on_rect(this_layer_data, context)
@@ -480,8 +479,16 @@ def apply_parent_transforms_to_wp_recursive(wp, this_layer_data, parent_layer_da
         apply_parent_transforms_to_wp_recursive(wp, get_layer_data_by_id(child_layer_id, anim_data), this_layer_data, anim_data)
 
 
-def figure_out_anim_length(flat_keyframes):
-    "uses the time of the last frame, or a fallback length"
+def figure_out_anim_length(anim, flat_keyframes, context):
+    "uses the time of the last frame, a named canvas keyframe or a fallback length"
+
+    # prioritize finding a canvas keyframe with the right label
+    anim_end_label = anim["name"] + "_end"
+    for canvas_kf in context["canvas_keyframes"]:
+        if canvas_kf["text"] == anim_end_label:
+            return int(canvas_kf["time"] * 1000)
+
+
     return max(100, flat_keyframes[len(flat_keyframes) - 1]["time"])
 
 
@@ -535,7 +542,7 @@ def write_data_to_xml(context):
                 # we've got to "flatten" the synfig keyframes, because each animated data entry has their own timeline there
                 flat_keyframes = flatten_synfig_anim_data(anim)
 
-                anim_length = figure_out_anim_length(flat_keyframes)
+                anim_length = figure_out_anim_length(anim, flat_keyframes, context)
                 anim_xml.attrib["length"] = str(anim_length)
 
                 spriteobj_layers = [il for il in anim["inner_layers"] if il["is_spriter_object"]]
@@ -630,6 +637,16 @@ def process(passed_args):
     viewbox_width = abs(float(viewbox[0]) - float(viewbox[2]))
 
     context["px_ratio"] = canvas_x / viewbox_width
+
+    # parse synfig keyframes... we may use them for knowing when an anim should end etc
+    context["canvas_keyframes"] = []
+    for canvas_kf in canvas.findall("keyframe"):
+        new_kf = {}
+        new_kf["time"] = float(canvas_kf.get("time").replace("s", "").replace("f", ""))
+        new_kf["text"] = canvas_kf.text
+        context["canvas_keyframes"].append(new_kf)
+        # logging.log(logging.DEBUG, "add keyframe %s", new_kf["text"])
+
 
     scml_entity = {
         "name": "entity_000"
