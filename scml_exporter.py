@@ -339,7 +339,7 @@ def flatten_synfig_anim_data(anim_data):
 def cleanup_flattened_keyframes(anim_data, flattened_keyframes):
     "sorts and creates missing data in the flattened keyframes as needed"
     flattened_keyframes.sort(key=itemgetter("time"))
-    logging.log(logging.DEBUG, "flatten anim - sorted keys: %s", flattened_keyframes)
+    # logging.log(logging.DEBUG, "flatten anim - sorted keys: %s", flattened_keyframes)
     logging.log(logging.DEBUG, "flatten anim - cleanup start")
     # spriter treats each sprite's transformation separately, while synfig's spriteswitch layer doesn't. This means we've got to figure out the transformation data where there's nothing in synfig, by interpolating
     for flat_kf in enumerate(flattened_keyframes):
@@ -360,10 +360,12 @@ def cleanup_flattened_keyframes(anim_data, flattened_keyframes):
                     # logging.log(logging.DEBUG, "anim type %s not found in frame %s for layer %s, lets get it elsewhere", anim_type, str(wp_time), layer_id)
                     # find the previous wp data with this layer's data in it
                     previous_wp_layerdata = {}
+                    previous_wp_time = 0
                     for j in range(i, -1, -1):
                         # logging.log(logging.DEBUG, "j: %s", j)
                         if layer_id in flattened_keyframes[j]["layers"] and anim_type in flattened_keyframes[j]["layers"][layer_id]:
                             previous_wp_layerdata = flattened_keyframes[j]["layers"][layer_id]
+                            previous_wp_time = flattened_keyframes[j]["time"]
                             # logging.log(logging.DEBUG, "anim type %s found in frame %s for layer %s, lets use it", anim_type, str(flattened_keyframes[j]["time"]), layer_id)
                             # logging.log(logging.DEBUG, "%s", previous_wp_layerdata)
                             break
@@ -387,16 +389,16 @@ def cleanup_flattened_keyframes(anim_data, flattened_keyframes):
                         if next_valid_wp is not None:
                             # logging.log(logging.DEBUG, "flatten anim - interpolate %s", anim_type)
                             # logging.log(logging.DEBUG, "flatten anim - next valid wp time is %s", str(next_valid_wp["time"]))
-                            time_delta = next_valid_wp["time"] - previous_wp_layerdata["time"]
+                            time_delta = next_valid_wp["time"] - previous_wp_time
                             next_wp_layerdata = next_valid_wp["layers"][layer_id]
                             layer_data[anim_type] = {}
                             if anim_type in ["offset", "scale"]:
                                 for attr in ["x", "y"]:
                                     interp_ratio = (next_wp_layerdata[anim_type][attr] - previous_wp_layerdata[anim_type][attr]) / (time_delta)
-                                    layer_data[anim_type][attr] = previous_wp_layerdata[anim_type][attr] + (interp_ratio * (wp_time - previous_wp_layerdata["time"]))
+                                    layer_data[anim_type][attr] = previous_wp_layerdata[anim_type][attr] + (interp_ratio * (wp_time - previous_wp_time))
                             elif anim_type == "angle":
                                 interp_ratio = (next_wp_layerdata[anim_type]["value"] - previous_wp_layerdata[anim_type]["value"]) / (time_delta)
-                                layer_data[anim_type]["value"] = previous_wp_layerdata[anim_type]["value"] + (interp_ratio * (wp_time - previous_wp_layerdata["time"]))
+                                layer_data[anim_type]["value"] = previous_wp_layerdata[anim_type]["value"] + (interp_ratio * (wp_time - previous_wp_time))
                         else:
                             layer_data[anim_type] = copy.deepcopy(previous_wp_layerdata[anim_type])
 
@@ -413,7 +415,7 @@ def add_hierarchy_influence_to_flattened_keyframes(anim_data, flattened_keyframe
     for flat_kf in enumerate(flattened_keyframes):
         i = flat_kf[0]
         wp = flat_kf[1]
-        logging.log(logging.DEBUG, "i: %s", i)
+        # logging.log(logging.DEBUG, "i: %s", i)
 
         # start from the root layers of the anim, then process the children etc
         target_layer = get_anim_root_layer(anim_data)
@@ -447,7 +449,7 @@ def apply_parent_transforms_to_wp_recursive(wp, this_layer_data, parent_layer_da
             # ok, this is where it gets a bit more complicated:
             # offset from parent is influenced by parent's offset, rotation and scale...
             # but the rotation and scaling are also influenced by the parent's pivot, as the children are rotated around that point
-            logging.log(logging.DEBUG, "y offset before apply: %s", str(wp_layer_data[anim_type]["y"]))
+            # logging.log(logging.DEBUG, "y offset before apply: %s", str(wp_layer_data[anim_type]["y"]))
 
             parent_pivot = wp_parent_layer_data["pivot"]
             parent_angle = wp_parent_layer_data["angle"]["value"]
@@ -578,7 +580,7 @@ def write_data_to_xml(context):
                             kflayer = kf["layers"][lso["id"]]
                             layer_offsets = lso["offsets"]
                             # convert pivot info to a value relative to the sprite's size and offsets
-                            logging.log(logging.DEBUG, "layer pivot x before conv: %s", str(kflayer["pivot"]["x"]))
+                            # logging.log(logging.DEBUG, "layer pivot x before conv: %s", str(kflayer["pivot"]["x"]))
                             conv_pivot = kflayer["pivot"].copy()
                             conv_pivot["x"] = 0.5 + ((px_ratio * (conv_pivot["x"])) / float(lso["changed_width"]))
                             conv_pivot["y"] = 0.5 + ((px_ratio * (conv_pivot["y"])) / float(lso["changed_height"]))
