@@ -40,6 +40,7 @@ def get_layer_data_by_id(layer_id, anim_data):
 
     return None
 
+
 def get_anim_root_layer(anim_data):
     "every anim has a single root layer, parenting all the anim's layers. This func returns it!"
     inner_layers = anim_data["inner_layers"]
@@ -128,6 +129,16 @@ def calc_layer_edits_based_on_rect(inner_layer_data, context):
     inner_layer_data["offsets"] = offsets
 
 
+def get_possibly_animated_data_entry(xml_elem, data_type):
+    "if the entry isn't animated, returns the data entry as usual. If animated, get the first anim entry"
+    anim_element = xml_elem.find("animated")
+    if anim_element is not None:
+        # get first waypoint
+        return anim_element.find("waypoint").find(data_type)
+
+    return xml_elem.find(data_type)
+
+
 def parse_animated_vector_data(vector_xml_elem):
     "returns an array containing waypoints for the provided container xml element"
     transf_data_arr = []
@@ -167,6 +178,21 @@ def get_empty_anim_layer_transformation_data():
 
     return ret_data
 
+def get_default_anim_flat_keyframe_data():
+    "returns keyframe data that a layer without any transformation would have"
+    ret_data = {}
+
+    for anim_type in supported_anim_types:
+        if anim_type in ["offset", "pivot"]:
+            ret_data[anim_type] = {"time":0.0,"x":0.0,"y":0.0}
+        elif anim_type == "scale":
+            ret_data[anim_type] = {"time":0.0,"x":1.0,"y":1.0}
+        elif anim_type == "angle":
+            ret_data[anim_type] = {"time":0.0,"value":0.0}
+        elif anim_type == "spriteswitch":
+            ret_data[anim_type] = {"time":0.0,"layer":""}
+
+    return ret_data
 
 def process_layer_canvas(parent_layer_data, this_layer, anim_data, context):
     "ingest data from layers recursively"
@@ -206,7 +232,7 @@ def process_layer_canvas(parent_layer_data, this_layer, anim_data, context):
                         process_layer_canvas(this_layer_data, canvas_child, anim_data, context)
 
             elif layer_param_type == "filename":
-                clp_filepath_str = layer_child.find("string").text
+                clp_filepath_str = get_possibly_animated_data_entry(layer_child, "string").text
                 this_layer_data["filepath"] = clp_filepath_str
                 logging.log(logging.DEBUG, "layersprite_data name: %s", clp_filepath_str)
                 inner_layer_filepath = os.path.join(context["sif_file_dir"], clp_filepath_str)
@@ -223,7 +249,7 @@ def process_layer_canvas(parent_layer_data, this_layer, anim_data, context):
                 # set up adjusted sprite rect (top left, bottom right).
                 # we can use this info to add custom scale keyframes on the spriter side
                 sprite_rect_pt = {}
-                param_vec = layer_child.find("vector")
+                param_vec = get_possibly_animated_data_entry(layer_child, "vector")
                 sprite_rect_pt["x"] = float(param_vec.find("x").text)
                 sprite_rect_pt["y"] = float(param_vec.find("y").text)
                 this_layer_data[layer_param_type] = sprite_rect_pt
@@ -358,8 +384,9 @@ def cleanup_flattened_keyframes(anim_data, flattened_keyframes):
             for anim_type in supported_anim_types:
                 if anim_type not in layer_data:
                     # logging.log(logging.DEBUG, "anim type %s not found in frame %s for layer %s, lets get it elsewhere", anim_type, str(wp_time), layer_id)
-                    # find the previous wp data with this layer's data in it
-                    previous_wp_layerdata = {}
+                    # find the previous wp data with this layer's data in it...
+                    # if nothing found, use default values
+                    previous_wp_layerdata = get_default_anim_flat_keyframe_data()
                     previous_wp_time = 0
                     for j in range(i, -1, -1):
                         # logging.log(logging.DEBUG, "j: %s", j)
